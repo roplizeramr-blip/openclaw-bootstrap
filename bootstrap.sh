@@ -78,6 +78,9 @@ fi
 oc config set tools.web.search.provider duckduckgo || true
 oc config set tools.web.search.enabled true || true
 
+echo "== admin http rpc =="
+oc plugins enable admin-http-rpc || echo "WARN: admin-http-rpc enable failed"
+
 echo "== automation =="
 if ! oc automations list 2>/dev/null | grep -q 'OmniRoute model catalog sync'; then
   oc automations create "*/30 * * * *" --name "OmniRoute model catalog sync" --command "sh $WRAPPER" --timeout-seconds 300 || true
