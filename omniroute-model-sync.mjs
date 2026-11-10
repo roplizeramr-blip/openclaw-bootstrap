@@ -2,6 +2,8 @@
 // Keep OpenClaw's OmniRoute provider catalog in sync with OmniRoute's /v1/models.
 // Adds new models, refreshes metadata, removes models OmniRoute no longer serves,
 // and preserves the pinned auto/best-coding route that /v1/models does not list.
+// Modalities are filtered to OpenClaw's allowlist (text, image, video, audio)
+// because OmniRoute may advertise values OpenClaw rejects with INVALID_REQUEST.
 import { execFileSync } from "node:child_process";
 
 const BASE = process.env.OMNIROUTE_BASE_URL || "https://omniroute-f6bdf863-ay9box.cranl.net/v1";
@@ -9,7 +11,17 @@ const KEY = process.env.OMNIROUTE_API_KEY || "";
 const PROVIDER = process.env.OMNIROUTE_PROVIDER_ID || "custom-omniroute-f6bdf863-ay9box-cranl-net";
 const PINNED_ID = "auto/best-coding";
 
+const ALLOWED_INPUT = ["text", "image", "video", "audio"];
+
 const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+
+function sanitizeModalities(input) {
+  const keep = Array.isArray(input)
+    ? input.filter((v) => typeof v === "string" && ALLOWED_INPUT.includes(v.toLowerCase()))
+    : [];
+  const unique = [...new Set(keep.map((v) => v.toLowerCase()))];
+  return unique.length ? unique : ["text"];
+}
 
 function oc(args) {
   const opts = { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 180000 };
@@ -39,7 +51,7 @@ function toEntry(m) {
   const caps = m.capabilities || {};
   const modalities =
     Array.isArray(m.input_modalities) && m.input_modalities.length
-      ? m.input_modalities
+      ? sanitizeModalities(m.input_modalities)
       : caps.vision
         ? ["text", "image"]
         : ["text"];
@@ -62,7 +74,9 @@ function readCurrent() {
   try {
     const out = oc(["config", "get", `models.providers.${PROVIDER}.models`]);
     const parsed = JSON.parse(out);
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+    // Heal previously-synced entries whose modalities are outside the allowlist.
+    return parsed.map((m) => ({ ...m, input: sanitizeModalities(m.input) }));
   } catch (err) {
     console.error(`could not read current catalog: ${err.message}`);
     return [];
@@ -100,7 +114,9 @@ const seen = new Set();
 for (const m of catalog) {
   if (seen.has(m.id)) continue;
   seen.add(m.id);
-  entries.push(byId.get(m.id) || toEntry(m));
+  const fresh = toEntry(m);
+  const prev = byId.get(m.id);
+  entries.push(prev ? { ...prev, ...fresh, input: fresh.input } : fresh);
 }
 
 const pinnedFromCatalog = seen.has(PINNED_ID);
