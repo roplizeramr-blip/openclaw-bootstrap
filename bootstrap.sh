@@ -82,7 +82,7 @@ echo "== admin http rpc =="
 oc plugins enable admin-http-rpc || echo "WARN: admin-http-rpc enable failed"
 
 echo "== automation =="
-if ! oc automations list 2>/dev/null | grep -q 'OmniRoute model catalog sync'; then
+if ! oc automations list 2>&1 | grep -qi 'omniroute'; then
   oc automations create "*/30 * * * *" --name "OmniRoute model catalog sync" --command "sh $WRAPPER" --timeout-seconds 300 || true
   JOB_ID=$(oc automations list 2>/dev/null | awk '/OmniRoute model catalog sync/ {print $1; exit}')
   if [ -n "${JOB_ID:-}" ]; then
