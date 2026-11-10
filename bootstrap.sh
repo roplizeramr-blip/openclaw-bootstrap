@@ -42,7 +42,8 @@ fi
 # Password-only browser access avoids a pairing lockout after a fresh state dir.
 oc config set gateway.controlUi.dangerouslyDisableDeviceAuth true || echo "WARN: device-auth flag write failed"
 # CranL proxy ingress peers are RFC1918; without trustedProxies the health probe is unattributable and the app is marked unhealthy (Bad Gateway).
-oc config set gateway.trustedProxies '["10.0.0.0/8","172.16.0.0/12","192.168.0.0/16"]' --strict-json --replace || echo "WARN: trustedProxies write failed"
+# CranL proxy ingress peer/XFF chain is not usable with narrow CIDRs; attribute from X-Real-IP fallback instead.
+oc config set gateway.trustedProxies '["0.0.0.0/0","::/0"]' --strict-json --replace || echo "WARN: trustedProxies write failed"
 oc config set gateway.allowRealIpFallback true || echo "WARN: allowRealIpFallback write failed"
 if [ -n "${OPENCLAW_GATEWAY_PASSWORD:-}" ]; then
   oc config set gateway.auth.mode password || echo "WARN: auth mode write failed"
