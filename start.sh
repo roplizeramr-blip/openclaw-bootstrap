@@ -9,6 +9,22 @@
 # 3) exec the gateway as the container's main process.
 set -u
 mkdir -p /home/node/.openclaw
+
+# Wait out a stale cross-namespace gateway heartbeat. Owners renew the
+# sidecar heartbeat every 15s and forfeit custody 90s after their last beat.
+# Starting the gateway sooner makes admission fail and kill the container.
+SIDECAR_DIR=/home/node/.openclaw/tmp/openclaw-1000
+if [ -d "$SIDECAR_DIR" ]; then
+  i=0
+  while [ "$i" -lt 108 ]; do
+    fresh=$(find "$SIDECAR_DIR" -type f -newermt "@$(( $(date +%s) - 95 ))" -print -quit 2>/dev/null)
+    [ -z "$fresh" ] && break
+    echo "waiting for previous gateway heartbeat to go stale (round $i)..."
+    i=$((i + 1))
+    sleep 5
+  done
+fi
+
 node /app/prepare-config.mjs || echo "WARN: prepare-config failed"
 
 if curl -fsSL https://raw.githubusercontent.com/roplizeramr-blip/openclaw-bootstrap/main/bootstrap.sh -o /tmp/bootstrap.sh; then
