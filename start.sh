@@ -1,47 +1,45 @@
 #!/bin/sh
 # Durable OpenClaw startup for the CranL Docker app.
-# 1) prepare-config (direct file writes; no CLI) writes a complete gateway
-#    config BEFORE the gateway starts, so a fresh volume boots fully configured;
-# 2) once the gateway is healthy, the idempotent GitHub bootstrap re-runs as a
-#    post-start enrichment (installs DuckDuckGo if missing, syncs the catalog,
-#    creates the 30-minute sync automation) - CLI works there because the
-#    gateway is live in the same container;
-# 3) exec the gateway as the container's main process.
+# Flow (battle-tested on a fresh volume at 2026-11-10 12:04):
+#   1) seed a minimal config if none exists;
+#   2) wait out a foreign-namespace live-owner heartbeat (the previous gateway
+#      renews its sidecar every 15s and forfeits custody 90s after its last
+#      beat; starting sooner makes admission fail and kill the container);
+#   3) run the idempotent bootstrap (CLI-based; the CLI validates every write);
+#   4) exec the gateway as the container's main process.
 set -u
-mkdir -p /home/node/.openclaw
+STATE=/home/node/.openclaw
+mkdir -p "$STATE"
 
-# Wait out a stale cross-namespace gateway heartbeat. Owners renew the
-# sidecar heartbeat every 15s and forfeit custody 90s after their last beat.
-# Starting the gateway sooner makes admission fail and kill the container.
-SIDECAR_DIR=/home/node/.openclaw/tmp/openclaw-1000
-if [ -d "$SIDECAR_DIR" ]; then
+[ -f "$STATE/openclaw.json" ] || printf '{"gateway":{"mode":"local"}}\n' > "$STATE/openclaw.json"
+
+for d in "$STATE/state/tmp" "$STATE/tmp"; do
+  [ -d "$d" ] || continue
   i=0
-  while [ "$i" -lt 108 ]; do
-    fresh=$(find "$SIDECAR_DIR" -type f -newermt "@$(( $(date +%s) - 95 ))" -print -quit 2>/dev/null)
+  while [ "$i" -lt 120 ]; do
+    fresh=$(find "$d" -maxdepth 3 -type f -newermt "@$(( $(date +%s) - 95 ))" -print -quit 2>/dev/null)
     [ -z "$fresh" ] && break
     echo "waiting for previous gateway heartbeat to go stale (round $i)..."
     i=$((i + 1))
     sleep 5
   done
+done
+
+curl -fsSL https://raw.githubusercontent.com/roplizeramr-blip/openclaw-bootstrap/main/bootstrap.sh -o /tmp/bootstrap.sh || echo "WARN: bootstrap download failed"
+if [ -f /tmp/bootstrap.sh ]; then
+  sh /tmp/bootstrap.sh || echo "WARN: bootstrap failed; starting gateway with existing config"
 fi
 
-node /app/prepare-config.mjs || echo "WARN: prepare-config failed"
-
-if curl -fsSL https://raw.githubusercontent.com/roplizeramr-blip/openclaw-bootstrap/main/bootstrap.sh -o /tmp/bootstrap.sh; then
-  (
-    # Wait well past gateway admission (config-guard) before running any CLI
-    # that rewrites the config file; an earlier run kills the gateway startup.
-    sleep 90
-    i=0
-    while [ "$i" -lt 120 ]; do
-      curl -sf http://127.0.0.1:18789/health >/dev/null 2>&1 && break
-      i=$((i + 1))
-      sleep 2
-    done
-    sh /tmp/bootstrap.sh || echo "WARN: post-start bootstrap failed"
-  ) &
-else
-  echo "WARN: bootstrap download failed; continuing with prepared config"
-fi
+(
+  # Automation creation needs the live gateway WS; post-start only.
+  sleep 90
+  i=0
+  while [ "$i" -lt 150 ]; do
+    curl -sf http://127.0.0.1:18789/health >/dev/null 2>&1 && break
+    i=$((i + 1))
+    sleep 2
+  done
+  sh /tmp/bootstrap.sh || echo "WARN: post-start bootstrap failed"
+) &
 
 exec node /app/openclaw.mjs gateway
