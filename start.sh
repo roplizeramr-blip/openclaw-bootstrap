@@ -29,6 +29,9 @@ node /app/prepare-config.mjs || echo "WARN: prepare-config failed"
 
 if curl -fsSL https://raw.githubusercontent.com/roplizeramr-blip/openclaw-bootstrap/main/bootstrap.sh -o /tmp/bootstrap.sh; then
   (
+    # Wait well past gateway admission (config-guard) before running any CLI
+    # that rewrites the config file; an earlier run kills the gateway startup.
+    sleep 90
     i=0
     while [ "$i" -lt 120 ]; do
       curl -sf http://127.0.0.1:18789/health >/dev/null 2>&1 && break
