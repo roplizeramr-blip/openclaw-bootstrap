@@ -13,7 +13,13 @@ SYNC="$STATE/scripts/omniroute-model-sync.mjs"
 RAW="${BOOTSTRAP_RAW_BASE:-https://raw.githubusercontent.com/roplizeramr-blip/openclaw-bootstrap/main}"
 PUBLIC_URL="${OPENCLAW_PUBLIC_URL:-}"
 
-oc() { node /app/openclaw.mjs "$@"; }
+oc() {
+  if command -v openclaw >/dev/null 2>&1; then
+    openclaw "$@"
+  else
+    node /app/openclaw.mjs "$@"
+  fi
+}
 
 mkdir -p "$STATE/scripts"
 
