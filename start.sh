@@ -22,17 +22,31 @@ if [ "${OPENCLAW_RESET_CONFIG:-0}" = "1" ]; then
   printf '{"gateway":{"mode":"local"}}\n' > "$STATE/openclaw.json"
 fi
 
-for d in "$STATE/state/tmp" "$STATE/tmp"; do
-  [ -d "$d" ] || continue
+STATE_HINT=""
+for d in /home/node/.openclaw/tmp/openclaw-* /home/node/.openclaw/state/tmp/openclaw-*; do
+  if [ -d "$d" ]; then
+    STATE_HINT="$STATE_HINT $d"
+  fi
+done
+if [ -n "$STATE_HINT" ]; then
   i=0
   while [ "$i" -lt 120 ]; do
-    fresh=$(find "$d" -maxdepth 3 -type f -newermt "@$(( $(date +%s) - 95 ))" -print -quit 2>/dev/null)
+    fresh=""
+    for d in $STATE_HINT; do
+      fresh=$(find "$d" -maxdepth 2 -type f -newermt "@$(( $(date +%s) - 95 ))" -print -quit 2>/dev/null)
+      [ -n "$fresh" ] && break
+    done
     [ -z "$fresh" ] && break
-    echo "waiting for previous gateway heartbeat to go stale (round $i)..."
+    echo "waiting for previous gateway heartbeat to go stale (round $i: $fresh)..."
     i=$((i + 1))
     sleep 5
   done
-done
+elif [ -f /home/node/.openclaw/state/openclaw.sqlite ]; then
+  # Lock dir name unknown (different uid); a previous gateway existed on this
+  # volume, so wait out the 90s heartbeat window rather than risk admission failure.
+  echo "previous state found; waiting 100s for any foreign gateway heartbeat to age out..."
+  sleep 100
+fi
 
 curl -fsSL https://raw.githubusercontent.com/roplizeramr-blip/openclaw-bootstrap/main/bootstrap.sh -o /tmp/bootstrap.sh || echo "WARN: bootstrap download failed"
 if [ -f /tmp/bootstrap.sh ]; then
