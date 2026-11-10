@@ -1,69 +1,86 @@
 # openclaw-bootstrap
 
-Idempotent bootstrap and durable container startup for OpenClaw on CranL,
-using OmniRoute as a custom OpenAI-compatible provider, DuckDuckGo web search,
-and a recurring model-catalog sync.
+Durable OpenClaw deployment for CranL: a Docker image built from this repo that
+boots a self-configuring OpenClaw Gateway with OmniRoute as a custom
+OpenAI-compatible provider, DuckDuckGo web search, and a recurring
+model-catalog sync. A named volume keeps all state across restarts.
 
-## What is in this repo
+## Layout
 
-- `Dockerfile` — image that builds on `ghcr.io/openclaw/openclaw:2026.11.2`
-- `prepare-config.mjs` — writes a minimal, complete gateway config **before**
-  the gateway starts (local mode, LAN bind, password auth, password-only
-  Control UI access, admin-http-rpc enabled), so no post-boot restart is needed
-- `start.sh` — startup: prepare-config, then the idempotent bootstrap, then the
-  gateway
-- `bootstrap.sh` — one-shot setup: OmniRoute provider + live catalog from
-  `/v1/models` (pinned `auto/best-coding` preserved), DuckDuckGo search,
-  catalog-sync automation
-- `omniroute-model-sync.mjs` — catalog sync (run by the automation every
-  30 minutes, or manually)
+- `Dockerfile` — thin image on `ghcr.io/openclaw/openclaw:2026.11.2`, runs `start.sh`
+- `start.sh` — startup: seed a minimal config if missing, wait out a foreign-namespace
+  gateway heartbeat (previous owner; prevents admission failure), run the idempotent
+  bootstrap, exec the gateway
+- `bootstrap.sh` — idempotent setup (safe to re-run): gateway mode/bind, password auth,
+  password-only Control UI access, `trustedProxies` + `allowRealIpFallback` (CranL
+  ingress compatibility), OmniRoute provider + live catalog, DuckDuckGo, admin-http-rpc,
+  sync automation
+- `omniroute-model-sync.mjs` — syncs the provider catalog from OmniRoute `/v1/models`
+  (run by the automation every 30 minutes, or manually)
 
 ## Deploy on CranL
 
-1. Create a Docker image app from this repo (or run `start.sh` semantics).
-2. Attach a **named volume** on `/home/node/.openclaw` (this is the gateway
-   state directory; without it, all config is lost on every redeploy).
-3. Set environment variables:
+1. Create a Docker app from this repo (`build: dockerfile`), port `18789`, region any.
+2. Attach a **named volume** on `/home/node/.openclaw` (the gateway state directory).
+3. Set environment variables (see below).
+4. Verify: `https://<app>.cranl.net/health` returns `{"ok":true,"status":"live"}`.
+
+### Redeploy protocol (learned the hard way)
+
+CranL's rolling deploy starts the new container while the previous gateway may
+still hold the shared state lock. The new gateway then fails admission and dies.
+To deploy reliably:
+
+1. `app_lifecycle({ action: "stop" })` — clean SIGTERM, releases the heartbeat
+2. wait ~2 minutes (the sidecar heartbeat must age out)
+3. `deploy_app` — the new container boots, admission passes, bootstrap re-applies
+   config idempotently
+4. `/health` 200 + Control UI at `/`
+
+The start.sh sidecar wait makes plain `restart` self-healing as well: the new
+container blocks until the previous owner's heartbeat is 95+ seconds stale.
+
+## Environment variables
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
 | `OMNIROUTE_BASE_URL` | yes | e.g. `https://<omniroute-host>/v1` |
 | `OMNIROUTE_API_KEY` | yes | OmniRoute API key |
-| `OPENCLAW_GATEWAY_PASSWORD` | yes | Gateway password (Control UI login) |
-| `OPENCLAW_PUBLIC_URL` | yes | e.g. `https://<app>.cranl.net` (Control UI origin) |
-| `OMNIROUTE_PROVIDER_ID` | no | defaults to the current custom provider id |
+| `OPENCLAW_GATEWAY_PASSWORD` | yes | Gateway password (Control UI login, admin-http-rpc) |
+| `OPENCLAW_PUBLIC_URL` | yes | e.g. `https://<app>.cranl.net` (Control UI allowed origin) |
+| `OPENCLAW_RESET_CONFIG` | no | `1` on first boot to wipe a poisoned openclaw.json; unset after |
+| `OMNIROUTE_PROVIDER_ID` | no | provider id override |
 
-The container is safe to restart: every boot re-runs the idempotent bootstrap,
-and the named volume keeps `openclaw.json`, the catalog, installed plugins,
-and automations across restarts and redeploys.
+## What you get
 
-## Recovery (fresh volume or lost state)
+- 44+ models from OmniRoute's live catalog (sync every 30 min), visible in the
+  Control UI picker; default model `<provider>/auto/best-coding`
+- DuckDuckGo web search (plugin) wired to `tools.web.search`
+- Password-only Control UI access (no device pairing needed after restarts)
+- `admin-http-rpc` on `POST /api/v1/admin/rpc` (Bearer = gateway password) for
+  operator automation (health, config.get/patch, cron.list/add/run, ...)
+- Catalog sync automation: `*/30 * * * *`, delivery: none
 
-Everything is rebuilt automatically on boot. If automation creation fails on
-first boot (the gateway is not up yet while the bootstrap runs), add it once
-after the gateway is live:
+## Verification
 
+```sh
+curl https://<app>.cranl.net/health
+curl -X POST https://<app>.cranl.net/api/v1/admin/rpc \
+  -H "Authorization: Bearer <OMNIROUTE_PASSWORD>" \
+  -H "Content-Type: application/json" \
+  -d '{"method":"config.get","params":{}}'
 ```
-POST /api/v1/admin/rpc
-Authorization: Bearer <OPENCLAW_GATEWAY_PASSWORD>
-{ "method": "cron.add", "params": {
-  "name": "OmniRoute model catalog sync",
-  "schedule": { "kind": "cron", "expr": "*/30 * * * *" },
-  "sessionTarget": "isolated",
-  "wakeMode": "now",
-  "payload": { "kind": "command", "argv": ["sh", "/home/node/.openclaw/scripts/omniroute-sync.sh"], "timeoutSeconds": 300 },
-  "delivery": { "mode": "none" }
-} }
-```
+
+Expected: `/health` → `{"ok":true,"status":"live"}`; `config.get` → provider with N models.
 
 ## Notes
 
-- `gateway.controlUi.dangerouslyDisableDeviceAuth` is a deliberate single-user
-  tradeoff: the gateway stays password-protected, but a browser no longer needs
-  a one-time device-pairing approval after a restart.
-- Custom providers require explicit model entries; the sync automation keeps
-  OpenClaw's catalog aligned with OmniRoute's `/v1/models` every 30 minutes.
-- Settings → Models (`/settings/model-providers`) can add/edit providers and
-  keys from the Control UI (`Connect provider`, `Set API key`, `Remove key`,
-  `Configure models`). The "Test connection" probe may report
-  "Invalid response" even when the provider works; verify with a real chat.
+- The CranL proxy ingress peer/XFF chain is not usable with narrow CIDRs, so the
+  gateway runs with `gateway.trustedProxies: ["0.0.0.0/0","::/0"]` and
+  `gateway.allowRealIpFallback: true`. Attribution only feeds rate limiting and
+  logs; password auth still gates everything.
+- Settings → Models can add/edit providers from the UI (Connect provider,
+  Set/Remove key). Custom providers require explicit model entries, which the
+  sync automation maintains.
+- A fresh volume is fully rebuilt by the bootstrap on first boot; a warm volume
+  is only additively modified.
