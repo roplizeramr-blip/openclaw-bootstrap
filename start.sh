@@ -13,6 +13,15 @@ mkdir -p "$STATE"
 
 [ -f "$STATE/openclaw.json" ] || printf '{"gateway":{"mode":"local"}}\n' > "$STATE/openclaw.json"
 
+# One-time escape hatch: if the config file was poisoned by crash-loop boots,
+# deleting it lets the bootstrap rebuild a clean config from scratch.
+# Session/state data (openclaw.sqlite) is untouched.
+if [ "${OPENCLAW_RESET_CONFIG:-0}" = "1" ]; then
+  echo "OPENCLAW_RESET_CONFIG=1: removing openclaw.json for a clean rebuild"
+  rm -f "$STATE/openclaw.json"
+  printf '{"gateway":{"mode":"local"}}\n' > "$STATE/openclaw.json"
+fi
+
 for d in "$STATE/state/tmp" "$STATE/tmp"; do
   [ -d "$d" ] || continue
   i=0
