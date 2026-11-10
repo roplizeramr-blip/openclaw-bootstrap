@@ -92,7 +92,9 @@ const cfg = loadConfig();
 cfg.gateway = cfg.gateway || {};
 cfg.gateway.mode = "local";
 cfg.gateway.bind = "lan";
-cfg.gateway.trustedProxies = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"];
+// CranL ingress does not present a usable trusted-proxy peer for this app;
+// leaving trustedProxies unset means request attribution uses direct-remote.
+delete cfg.gateway.trustedProxies;
 cfg.gateway.auth = { ...(cfg.gateway.auth || {}), mode: "password" };
 if (process.env.OPENCLAW_GATEWAY_PASSWORD) {
   cfg.gateway.auth.password = process.env.OPENCLAW_GATEWAY_PASSWORD;
